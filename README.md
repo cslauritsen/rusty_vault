@@ -34,7 +34,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rusty_vault = { git = "https://github.com/sherwin-williams-co/rusty-vault", features = ["oidc_callback"] }
+rusty_vault = { git = "https://github.com/sherwin-williams-co/rusty_vault", features = ["oidc_callback"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
