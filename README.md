@@ -93,11 +93,21 @@ Unit tests run with the standard `cargo test`.
 
 Integration tests in `tests/vault_live.rs` require live Vault access and are skipped by default.
 
-Run all live tests with OIDC enabled:
+You can opt to run all live tests with OIDC enabled. For example: 
+
 
 ```bash
-RUN_VAULT_LIVE_TESTS=1 cargo test --features oidc_callback -- --include-ignored
+export TEST_SECRET_API_PATH=/v1/my_mount/data/foo/bar/baz
+export TEST_SECRET_FIELD_NAME=quux
+export TEST_SECRET_VALUE_PREFIX=abc123
+export RUN_VAULT_LIVE_TESTS=1 
+cargo test --features oidc_callback -- --include-ignored
 ```
+The above will test that the value returned from the equivalent vault CLI command:
+
+    vault kv get -field quux -mount my_mount foo/bar/baz
+
+starts with the string `abc123`
 
 Run only the OIDC live test (with output):
 

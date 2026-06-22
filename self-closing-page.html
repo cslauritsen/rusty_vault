@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<script>
+// Closes IE, Edge, Chrome, Brave
+/*
+window.onload = function load() {
+  window.open('', '_self', '');
+  window.close();
+};
+*/
+</script>
+</head>
+<body>
+  <p>Authentication successful, you can close this window now.</p>
+  <script>
+    // Needed for Firefox security
+    setTimeout(function() {
+          window.close()
+    }, 5000);
+  </script>
+</body>
+</html>

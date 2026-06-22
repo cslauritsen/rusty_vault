@@ -15,48 +15,23 @@ LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE A
 IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
+*/
 
 use axum::Router;
 use axum::extract::{Query, State};
 use axum::response::Html;
 use axum::routing::get;
 use latch::{Latch, spin::Spin};
-use log::debug;
+use log::{warn, info, debug};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
+use tokio::fs;
+use secrecy::{ExposeSecret};
 use crate::{VaultClient, VaultClientErr};
 
 const OIDC_CALLBACK_PORT: u16 = 8250;
-const OIDC_ROLE: &str = "user";
-const OIDC_HTML: &str = r#"
-<!doctype html>
-<html>
-<head>
-<script>
-// Closes IE, Edge, Chrome, Brave
-/*
-window.onload = function load() {
-  window.open('', '_self', '');
-  window.close();
-};
-*/
-</script>
-</head>
-<body>
-  <p>Authentication successful, you can close the browser now.</p>
-  <script>
-    // Needed for Firefox security
-    setTimeout(function() {
-          window.close()
-    }, 5000);
-  </script>
-</body>
-</html>
-"#;
 
 #[derive(Clone)]
 struct OidcCallbackState {
@@ -84,7 +59,7 @@ impl VaultClient {
         }
 
         app_state.latch.open();
-        Html(OIDC_HTML)
+        Html(include_str!("../self-closing-page.html"))
     }
 
     /// Invokes the vault OIDC login flow and returns the issued token on success.
@@ -95,8 +70,17 @@ impl VaultClient {
             latch: Arc::clone(&latch),
             oauth_params: Arc::clone(&oauth_params),
         };
-        let role = OIDC_ROLE.to_string();
-        let redirect_uri = format!("http://localhost:{}/oidc/callback", OIDC_CALLBACK_PORT);
+        let role = std::env::var("VAULT_OIDC_ROLE").ok().or_else(|| Some(String::from("user")));
+        let callback_port: u16 = match std::env::var("VAULT_OIDC_CALLBACK_PORT").ok() {
+                Some(s) => match s.parse::<u16>() {
+                    Ok(i) => i,
+                    Err(e) => {
+                        return Err(crate::VaultClientErr::from(e))
+                    }
+                },
+                None => OIDC_CALLBACK_PORT,
+        };
+        let redirect_uri = format!("http://localhost:{}/oidc/callback", callback_port);
 
         let oidc_auth_url = format!("{}/v1/auth/oidc/oidc/auth_url", self.vault_addr);
         let oidc_auth_payload = serde_json::json!({
@@ -161,5 +145,35 @@ impl VaultClient {
             .to_string()
             .replace("\"", "");
         Ok(new_token)
+    }
+
+    #[cfg(unix)]
+    async fn chmod(path: impl AsRef<std::path::Path>, mode: u32) -> Result<(), VaultClientErr> {
+        tokio::fs::set_permissions(path, std::os::unix::prelude::PermissionsExt::from_mode(mode)).await?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    async fn chmod(_path: impl AsRef<std::path::Path>, _mode: u32) -> Result<(), VaultClientErr> {
+        Ok(())
+    }
+
+    pub(crate) async fn save_token(&self) -> () {
+        if let Some(home) = dirs::home_dir() {
+            let token_file = home.join(".vault-token");
+            if let Some(token_val) = self.token.lock().await.as_ref() {
+                match fs::write(&token_file, token_val.expose_secret()).await {
+                    Ok(()) => {
+                        Self::chmod(&token_file, 0o600).await.ok();
+                        info!("Saved token to {}", token_file.display());
+                    }
+                    Err(e) => {
+                        warn!("Ignoring failed attempt to save token to ~/.vault-token {e}");
+                    }
+                }
+            } else {
+                warn!("token empty, not saved");
+            }
+        }
     }
 }

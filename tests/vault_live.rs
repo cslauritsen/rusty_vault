@@ -46,18 +46,22 @@ async fn get_a_secret_live() {
     }
 
     let Ok(SecureValue::Object(secret)) = vc
-        .fetch_secret(env::var("TEST_SECRET_API_PATH").unwrap().as_str())
+        .fetch_secret(env::var("TEST_SECRET_API_PATH")
+            .map_err(|e| format!("env var TEST_SECRET_API_PATH {:?}", e))
+            .unwrap()
+            .as_str())
         .await
     else {
         panic!("fetch_secret() should be OK");
     };
 
-    let SecureValue::Secret(datum) = &secret["tt_partner_token"] else {
-        panic!(
-            "expected secret[\"tt_partner_token\"] to be a JSON string, got: {:?}",
-            secret["tt_partner_token"]
-        );
-    };
+    let SecureValue::Secret(datum) = &secret[
+        env::var("TEST_SECRET_FIELD_NAME")
+        .unwrap()
+        .as_str()
+    ] else { todo!() };
 
-    assert!(datum.expose_secret().starts_with(env::var("TEST_SECRET_VALUE_PREFIX").unwrap().as_str()));
+    let prefix = env::var("TEST_SECRET_VALUE_PREFIX").unwrap();
+
+    assert!(datum.expose_secret().starts_with(&prefix));
 }

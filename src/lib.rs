@@ -23,12 +23,9 @@ mod oidc;
 
 mod kubernetes;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
-use crate::VaultClientErr::{InvalidSecret, InvalidToken};
 use crate::secure_value::SecureValue;
-use log::{debug, info, warn};
+use crate::VaultClientErr::{InvalidSecret, InvalidToken};
+use log::{debug, info};
 use once_cell::sync::Lazy;
 use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecret, SecretString};
@@ -36,7 +33,6 @@ use std::collections::HashMap;
 use std::env;
 use std::net::AddrParseError;
 use std::sync::Arc;
-use tokio::fs;
 use tokio::sync::Mutex;
 
 static METHOD_GATE: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -49,7 +45,7 @@ pub enum VaultClientErr {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("json error: {0}")]
+    #[error("address parsing error: {0}")]
     AddrParse(#[from] AddrParseError),
 
     #[error("io error: {0}")]
@@ -63,6 +59,9 @@ pub enum VaultClientErr {
 
     #[error("invalid secret: {0}")]
     InvalidSecret(&'static str),
+
+    #[error("invalid integer: {0}")]
+    InvalidInteger(#[from] std::num::ParseIntError),
 }
 
 #[derive(Debug)]
@@ -97,40 +96,6 @@ impl VaultClient {
         Ok(response.status().is_success())
     }
 
-    #[cfg(not(feature = "oidc_callback"))]
-    async fn oidc_login(&self) -> Result<String, VaultClientErr> {
-        Err(InvalidToken("oidc_callback feature is disabled"))
-    }
-
-    #[cfg(unix)]
-    async fn chmod(path: impl AsRef<std::path::Path>, mode: u32) -> Result<(), VaultClientErr> {
-        fs::set_permissions(path, PermissionsExt::from_mode(mode)).await?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    async fn chmod(_path: impl AsRef<std::path::Path>, _mode: u32) -> Result<(), VaultClientErr> {
-        Ok(())
-    }
-
-    async fn save_token(&self) -> () {
-        if let Some(home) = dirs::home_dir() {
-            let token_file = home.join(".vault-token");
-            if let Some(token_val) = self.token.lock().await.as_ref() {
-                match fs::write(&token_file, token_val.expose_secret()).await {
-                    Ok(()) => {
-                        Self::chmod(&token_file, 0o600).await.ok();
-                        info!("Saved token to {}", token_file.display());
-                    }
-                    Err(e) => {
-                        warn!("Ignoring failed attempt to save token to ~/.vault-token {e}");
-                    }
-                }
-            } else {
-                warn!("token empty, not saved");
-            }
-        }
-    }
 
     async fn replace_token(&self, newtok: &SecretString) {
         self.token.lock().await.replace(newtok.clone());
@@ -146,7 +111,7 @@ impl VaultClient {
     }
 
     /// Resolve a vault token.
-    /// First, try see if there's a `VAULT_TOKEN` enviroment variable
+    /// First, try to see if there's a `VAULT_TOKEN` enviroment variable
     /// then try to validate it. if it's good, use it.
     /// Else try to load `~/.vault-token`
     /// then try to validate it, if it's good, use it.
@@ -283,8 +248,7 @@ pub async fn env_secret_and_remove(env_var_name: &str) -> Option<SecretString> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    use crate::VaultClient;
     #[tokio::test]
     async fn default_client_starts_with_empty_cached_token() {
         let vc = VaultClient::default();

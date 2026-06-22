@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["oidc_callback"]
 oidc_callback = ["dep:axum", "dep:latch", "dep:open"]
 
 [dependencies]
-reqwest = "0.13.3"
+reqwest = { version = "0.12", features = ["rustls-tls-webpki-roots",]}
 serde_json = "1.0.149"
 
 tokio = { version = "1.52.2", features = ['full'] }
