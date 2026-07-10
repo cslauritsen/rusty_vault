@@ -113,7 +113,7 @@ impl VaultClient {
         debug!("http server listening on {}", addr);
 
         open::that(&target_url)
-            .map_err(|_| VaultClientErr::InvalidToken("failed to open browser for OIDC login"))?;
+            .map_err(|_| VaultClientErr::InvalidToken(String::from("failed to open browser for OIDC login")))?;
         debug!("opened browser to {}", target_url);
 
         axum::serve(listener, app)

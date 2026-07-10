@@ -17,22 +17,48 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-use log::debug;
+use crate::secure_value::SecureValue;
+use crate::{VaultClient, VaultClientErr};
+use log::{debug, warn};
 use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecret, SecretString};
 use std::env;
 
-use crate::secure_value::SecureValue;
-use crate::{VaultClient, VaultClientErr};
-
 /// Default path where Kubernetes injects the service account JWT.
-const K8S_SA_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+const DEFAULT_K8S_SA_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 
 impl VaultClient {
     /// Returns `true` when the process appears to be running inside a Kubernetes pod,
     /// i.e. the service account token file is present on disk.
     pub fn is_kubernetes_env() -> bool {
-        std::path::Path::new(K8S_SA_TOKEN_PATH).exists()
+        let exists = std::path::Path::new(DEFAULT_K8S_SA_TOKEN_PATH).exists();
+        debug!("is_kubernetes_env() -> {}", exists);
+        exists
+    }
+
+    fn load_k8s_token() -> Result<SecretString, VaultClientErr> {
+        let path_str = env::var("VAULT_K8S_SA_TOKEN_PATH")
+            .unwrap_or_else(|_| String::from(DEFAULT_K8S_SA_TOKEN_PATH));
+        debug!("k8s token path: {}", &path_str);
+        let sa_token_path = std::path::Path::new(&path_str);
+
+        if !sa_token_path.exists() {
+            return Err(VaultClientErr::InvalidToken(format!(
+                "Kubernetes service account token file not found at {}",
+                &path_str
+            )));
+        }
+
+        let mut jwt_plain = std::fs::read_to_string(&sa_token_path).map_err(|e| {
+            warn!(
+                "failed to read Kubernetes service account token from {}: {}",
+                &path_str, e
+            );
+            VaultClientErr::Io(e)
+        })?;
+        let jwt = SecretString::from(jwt_plain.trim());
+        jwt_plain.zeroize();
+        Ok(jwt)
     }
 
     /// Logs into Vault using the [Kubernetes auth method] and returns the issued
@@ -48,23 +74,18 @@ impl VaultClient {
     ///
     /// [Kubernetes auth method]: https://developer.hashicorp.com/vault/docs/auth/kubernetes
     pub async fn kubernetes_login(&self) -> Result<SecretString, VaultClientErr> {
+        debug!(
+            "attempting Kubernetes login with vault_addr={}",
+            self.vault_addr
+        );
         let role = env::var("VAULT_K8S_ROLE").map_err(|_| {
-            VaultClientErr::InvalidToken("VAULT_K8S_ROLE env var is required for Kubernetes login")
+            VaultClientErr::InvalidToken("VAULT_K8S_ROLE env var is required for Kubernetes login".to_string())
         })?;
 
         let auth_path =
             env::var("VAULT_K8S_AUTH_PATH").unwrap_or_else(|_| String::from("kubernetes"));
 
-        let sa_token_path =
-            env::var("VAULT_K8S_SA_TOKEN_PATH").unwrap_or_else(|_| String::from(K8S_SA_TOKEN_PATH));
-
-        let mut jwt_plain = std::fs::read_to_string(&sa_token_path).map_err(|e| {
-            debug!("failed to read Kubernetes service account token from {sa_token_path}: {e}");
-            VaultClientErr::Io(e)
-        })?;
-
-        let jwt = SecretString::from(jwt_plain.trim());
-        jwt_plain.zeroize();
+        let jwt = Self::load_k8s_token()?;
 
         let login_url = format!(
             "{}/v1/auth/{}/login",
@@ -77,7 +98,10 @@ impl VaultClient {
             "role": role,
         });
 
-        debug!("attempting Kubernetes vault login at {login_url} with role={role}");
+        debug!(
+            "attempting Kubernetes vault login at {} with role={}",
+            login_url, role
+        );
 
         let resp = self
             .http_client
@@ -88,11 +112,13 @@ impl VaultClient {
             .await?;
 
         let status = resp.status();
-        debug!("Kubernetes login response status={status}");
-
+        debug!("Kubernetes login response status={}", status);
         if !status.is_success() {
+            if let Some(resp_text) = resp.text().await.ok() {
+                warn!("Kubernetes login response body: {}", resp_text);
+            }
             return Err(VaultClientErr::InvalidToken(
-                "Kubernetes login request failed",
+                "Kubernetes login request failed".to_string(),
             ));
         }
 

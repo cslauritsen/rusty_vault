@@ -55,7 +55,7 @@ pub enum VaultClientErr {
     MissingField(&'static str),
 
     #[error("invalid token: {0}")]
-    InvalidToken(&'static str),
+    InvalidToken(String),
 
     #[error("invalid secret: {0}")]
     InvalidSecret(&'static str),
@@ -139,10 +139,13 @@ impl VaultClient {
                 if let Ok(validated) = self.lookup_self(&token).await
                     && validated
                 {
+                    info!("Using token from ~/.vault-token file");
                     self.replace_token(&token).await;
                     return Ok(token);
                 }
             }
+        } else {
+            info!("no home directory found, skipping ~/.vault-token lookup");
         }
 
         if Self::is_kubernetes_env() {
@@ -164,12 +167,14 @@ impl VaultClient {
                 self.save_token().await;
                 return Ok(token);
             }
+        } else {
+            info!("Skipping OIDC vault login in Kubernetes environment");
         }
 
         // any token we have is no good, remove it
         self.token.lock().await.take();
         Err(InvalidToken(
-            "no valid token found via env, file, Kubernetes, or OIDC login",
+            "no valid token found via env, file, Kubernetes, or OIDC login".into(),
         ))
     }
 
@@ -229,7 +234,7 @@ impl VaultClient {
             }
             Err(InvalidSecret("secret of unexpected shape"))
         } else {
-            Err(InvalidToken("invalid token"))
+            Err(InvalidToken("invalid token".into()))
         }
     }
 }
